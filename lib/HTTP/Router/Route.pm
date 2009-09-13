@@ -1,111 +1,100 @@
 package HTTP::Router::Route;
 
-use Mouse;
-use Hash::Merge qw(merge);
-use List::MoreUtils qw(any);
-use URI::Template::Restrict;
+use Any::Moose;
+use Any::Moose 'X::AttributeHelpers';
+use URI::Template::Restrict 0.03;
 use HTTP::Router::Match;
-use namespace::clean -except => ['meta'];
 
 has 'path' => (
-    is       => 'rw',
-    isa      => 'Str',
-    required => 1,
-    trigger  => sub {
-        my ($self, $path) = @_;
-
-        my @parts = split m!/! => $path;
-        $self->parts(scalar @parts);
-
-        my $templates = URI::Template::Restrict->new(template => $path);
-        $self->templates($templates);
-    },
-);
-
-has 'parts' => (
-    is  => 'rw',
-    isa => 'Int',
-);
-
-has 'templates' => (
-    is      => 'rw',
-    isa     => 'URI::Template::Restrict',
-    handles => ['variables'],
+    is         => 'rw',
+    isa        => 'Str',
+    metaclass  => 'String',
+    lazy_build => 1,
+    provides   => { append => 'append_path' },
 );
 
 has 'params' => (
-    is      => 'rw',
-    isa     => 'HashRef',
-    default => sub { +{} },
-    lazy    => 1,
+    is         => 'rw',
+    isa        => 'HashRef',
+    metaclass  => 'Collection::Hash',
+    lazy_build => 1,
+    provides   => { set => 'add_params' },
 );
 
 has 'conditions' => (
-    is      => 'rw',
-    isa     => 'HashRef',
-    default => sub { +{} },
-    lazy    => 1,
+    is         => 'rw',
+    isa        => 'HashRef',
+    metaclass  => 'Collection::Hash',
+    lazy_build => 1,
+    provides   => { set => 'add_conditions' },
 );
+
+has 'parts' => (
+    is      => 'rw',
+    isa     => 'Int',
+    lazy    => 1,
+    default => sub { $_[0]->path =~ tr!/!/! },
+);
+
+has 'templates' => (
+    is         => 'rw',
+    isa        => 'URI::Template::Restrict',
+    lazy_build => 1,
+    handles    => [qw'variables extract'],
+);
+
+sub _build_path       { '' }
+sub _build_params     { {} }
+sub _build_conditions { {} }
+
+sub _build_templates { URI::Template::Restrict->new($_[0]->path) }
 
 sub match {
     my ($self, $req) = @_;
-    return unless blessed $req;
+    return unless blessed $req and $req->can('path');
 
-    my $path = $req->can('path') ? $req->path : do {
-        if ($req->can('uri') and blessed($req->uri) and $req->uri->can('path')) {
-            $req->uri->path;
-        }
-        else {
-            undef;
-        }
-    };
-    return unless defined $path;
-
-    # part size
-    my $size = scalar @{[ split m!/! => $path ]};
-    return unless $size == $self->parts;
+    my $path = $req->path;
+    defined $path or return;
 
     # path, captures
-    my %vars = $self->templates->extract($path);
-    if (%vars) {
-        return unless $self->check_variable_conditions(\%vars);
+    my %captures;
+    if ($self->variables) {
+        my $size = $path =~ tr!/!/!;
+        $size == $self->parts             or return; # FIXME: ignore parts
+        %captures = $self->extract($path)     or return;
+        $self->_is_valid_variables(\%captures) or return;
     }
     else {
-        return unless $path eq $self->path;
+        $path eq $self->path or return;
     }
 
     # conditions
-    return unless $self->check_request_conditions($req);
+    $self->_is_valid_request($req) or return;
+
+    my %params = %captures;
+    for my $key (keys %{ $self->params }) {
+        next if exists $params{$key};
+        $params{$key} = $self->params->{$key};
+    }
 
     return HTTP::Router::Match->new(
-        params   => merge(\%vars, $self->params),
-        captures => \%vars,
+        params   => \%params,
+        captures => \%captures,
         route    => $self,
     );
 }
 
-sub uri_for {
-    my ($self, $captures) = @_;
-
-    my $params = $captures || {};
-    for my $name (keys %$params) {
-        return unless $self->validate($params->{$name}, $self->conditions->{$name});
-    }
-
-    return $self->templates->process_to_string(%$params);
-}
-
-sub check_variable_conditions {
+sub _is_valid_variables {
     my ($self, $vars) = @_;
 
     for my $name (keys %$vars) {
-        return 0 unless $self->validate($vars->{$name}, $self->conditions->{$name});
+        return 0 unless $self->_validate($vars->{$name}, $self->conditions->{$name});
     }
 
     return 1;
 }
 
-sub check_request_conditions {
+sub _is_valid_request {
     my ($self, $req) = @_;
 
     my $conditions = do {
@@ -121,56 +110,109 @@ sub check_request_conditions {
             $value = 'GET' if $value eq 'HEAD';
         }
 
-        return 0 unless $self->validate($value, $self->conditions->{$name});
+        return 0 unless $self->_validate($value, $self->conditions->{$name});
     }
 
     return 1;
 }
 
-sub validate {
+sub _validate {
     my ($self, $input, $expected) = @_;
     # arguments
     return 0 unless defined $input;
     return 1 unless defined $expected;
     # validation
-    return $input =~ $expected             if ref $expected eq 'Regexp';
-    return any { $input eq $_ } @$expected if ref $expected eq 'ARRAY';
+    return $input =~ $expected              if ref $expected eq 'Regexp';
+    return grep { $input eq $_ } @$expected if ref $expected eq 'ARRAY';
     return $input eq $expected;
 }
 
-no Mouse; __PACKAGE__->meta->make_immutable; 1;
+sub uri_for {
+    my ($self, $args) = @_;
+
+    for my $name (keys %{ $args || {} }) {
+        return unless $self->_validate($args->{$name}, $self->conditions->{$name});
+    }
+
+    return $self->templates->process_to_string(%$args);
+}
+
+no Any::Moose;
+__PACKAGE__->meta->make_immutable;
 
 =for stopwords params
 
 =head1 NAME
 
-HTTP::Router::Route
+HTTP::Router::Route - Route Representation for HTTP::Router
+
+=head1 SYNOPSIS
+
+  use HTTP::Router;
+  use HTTP::Router::Route;
+
+  my $router = HTTP::Router->new;
+
+  my $route = HTTP::Router::Route->new(
+      path       => '/',
+      conditions => { method => 'GET' },
+      params     => { controller => 'Root', action => 'index' },
+  );
+
+  $router->add_route($route);
 
 =head1 METHODS
 
 =head2 match($req)
 
-=head2 uri_for($captures?)
+Returns a L<HTTP::Router::Match> object, or C<undef>
+if route does not match a given request.
+
+=head2 append_path($path)
+
+Appends path to route.
+
+=head2 add_params($params)
+
+Adds parameters to route.
+
+=head2 add_conditions($conditions)
+
+Adds conditions to route.
+
+=head2 extract($path)
+
+Extracts variable values from $path, and returns variable hash.
+
+=head2 uri_for($args?)
+
+Returns a path which is processed with parameters.
 
 =head1 PROPERTIES
 
 =head2 path
 
+Path string for route.
+
 =head2 params
+
+Route specific parameters.
 
 =head2 conditions
 
-=head2 variables
+Conditions for determining route.
 
 =head2 templates
 
-=head1 INTERNALS
+L<URI::Template::Restrict> representation with route path.
 
-=head2 check_variable_conditions
+=head2 parts
 
-=head2 check_request_conditions
+Size of splitting route path with slash.
 
-=head2 validate
+=head2 variables
+
+Variable names in route path.
 
 =head1 AUTHOR
 

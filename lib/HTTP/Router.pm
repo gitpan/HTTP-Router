@@ -1,66 +1,114 @@
 package HTTP::Router;
 
-use 5.8.1;
-use Mouse;
-use HTTP::Router::Mapper;
-use HTTP::Router::RouteSet;
+use 5.008_001;
+use Any::Moose;
+use Any::Moose 'X::AttributeHelpers';
+use Hash::AsObject;
+use List::MoreUtils 'part';
+use HTTP::Router::Route;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
-has 'routeset' => (
-    is         => 'rw',
-    isa        => 'HTTP::Router::RouteSet',
-    lazy_build => 1,
-    handles    => ['routes'],
+has 'routes' => (
+    is         => 'ro',
+    isa        => 'ArrayRef',
+    metaclass  => 'Collection::Array',
+    lazy       => 1,
+    builder    => '_build_routes',
+    auto_deref => 1,
+    provides   => {
+        push  => 'add_route',
+        clear => 'clear_routes',
+    },
 );
 
-sub _build_routeset { HTTP::Router::RouteSet->new }
+has 'use_inline_match' => (
+    is      => 'rw',
+    isa     => 'Bool',
+    default => 1,
+);
 
-sub define {
-    my ($self, $block) = @_;
+has 'inline_matcher' => (
+    is         => 'rw',
+    isa        => 'CodeRef',
+    lazy_build => 1,
+);
 
-    unless (blessed $self) {
-        $self = $self->new;
-    }
+sub _build_routes { [] }
 
-    if ($block) {
-        local $_ = HTTP::Router::Mapper->new(routeset => $self->routeset);
-        $block->($_);
-    }
+sub _build_inline_matcher {
+    my $self = shift;
 
-    $self;
+    my ($path_routes, $capture_routes) =
+        part { scalar $_->templates->expansions > 0 } $self->routes;
+
+    return sub {
+        my $req   = shift;
+        my $parts = $req->path =~ tr!/!/!;
+
+        # path
+        for my $route (grep { $_->parts == $parts } @$path_routes) {
+            my $match = $route->match($req) or next;
+            return $match; # return if found path route
+        }
+
+        # capture
+        for my $route (grep { $_->parts <= $parts } @$capture_routes) {
+            my $match = $route->match($req) or next;
+            return $match;
+        }
+
+        return;
+    };
 }
+
+around 'add_route' => sub {
+    my ($next, $self, $route, @args) = @_;
+
+    unless (blessed $route) {
+        $route = HTTP::Router::Route->new(path => $route, @args);
+    }
+
+    $self->clear_inline_matcher if $self->has_inline_matcher;
+    $next->($self, $route);
+};
 
 sub reset {
     my $self = shift;
-    $self->routeset($self->_build_routeset);
+    $self->clear_routes;
+    $self->clear_inline_matcher if $self->has_inline_matcher;
     $self;
 }
 
 sub match {
-    my ($self, $req) = @_;
+    my $self = shift;
+    my $req  = blessed $_[0] ? $_[0] : Hash::AsObject->new(path => $_[0], %{ $_[1] || {} });
 
-    for my $route ($self->routes) {
-        next   unless my $match = $route->match($req);
-        return $match;
+    if ($self->use_inline_match) {
+        return $self->inline_matcher->($req);
+    }
+    else {
+        for my $route ($self->routes) {
+            my $match = $route->match($req) or next;
+            return $match;
+        }
+
+        return;
     }
 }
 
 sub route_for {
-    my ($self, $req) = @_;
-    return unless my $match = $self->match($req);
-    return $match->route;
-}
-
-sub show_table {
     my $self = shift;
-    require HTTP::Router::Debug;
-    HTTP::Router::Debug->show_table( $self->routes );
+
+    if (my $match = $self->match(@_)) {
+        return $match->route;
+    }
+
+    return;
 }
 
-no Mouse; __PACKAGE__->meta->make_immutable; 1;
-
-=for stopwords routeset
+no Any::Moose;
+__PACKAGE__->meta->make_immutable;
 
 =head1 NAME
 
@@ -70,53 +118,80 @@ HTTP::Router - Yet Another Path Router for HTTP
 
   use HTTP::Router;
 
-  my $router = HTTP::Router->define(sub {
-      $_->match('/')->to({ controller => 'Root', action => 'index' });
-      $_->match('/index.{format}')->to({ controller => 'Root', action => 'index' });
+  my $router = HTTP::Router->new;
 
-      $_->match('/archives/{year}/{month}', { year => qr/\d{4}/, month => qr/\d{2}/ })
-          ->to({ controller => 'Archive', action => 'by_month' });
+  my $route = HTTP::Router::Route->new(
+      path       => '/',
+      conditions => { method => 'GET' },
+      params     => { controller => 'Root', action => 'index' },
+  );
+  $router->add_route($route);
+  # or
+  $router->add_route('/' => (
+      conditions => { method => 'GET' },
+      params     => { controller => 'Root', action => 'index' },
+  ));
 
-      $_->match('/account/login', { method => ['GET', 'POST'] })
-          ->to({ controller => 'Account', action => 'login' });
-
-      $_->resources('users');
-
-      $_->resource('account');
-
-      $_->resources('members', sub {
-          $_->resources('articles');
-      });
-  });
-
-  # GET /index.html
+  # GET /
   my $match = $router->match($req);
-  $match->params;   # { controller => 'Root', action => 'index', format => 'html' }
-  $match->captures; # { format => 'html' }
-
-  $match->uri_for({ format => 'xml' }); # '/index.xml'
+  $match->params;  # { controller => 'Root', action => 'index' }
+  $match->uri_for; # '/'
 
 =head1 DESCRIPTION
 
-HTTP::Router provides a Merb-like way of constructing routing tables.
+HTTP::Router provides a way of constructing routing tables.
+
+If you are interested in a Merb-like constructing way,
+please check L<HTTP::Router::Declare>.
 
 =head1 METHODS
 
 =head2 new
 
-=head2 define($code)
+Returns a HTTP::Router object.
+
+=head2 add_route($route)
+
+=head2 add_route($path, %args)
+
+Adds a new route.
+You can specify L<HTTP::Router::Route> object,
+or path string and options pair.
+
+example:
+
+  my $route = HTTP::Router::Route->new(
+      path       => '/',
+      conditions => { method => 'GET' },
+      params     => { controller => 'Root', action => 'index' },
+  );
+
+  $router->add_route($route);
+
+equals to:
+
+  $router->add_route('/' => (
+      conditions => { method => 'GET' },
+      params     => { controller => 'Root', action => 'index' },
+  ));
+
+=head2 routes
+
+Returns registered routes.
 
 =head2 reset
 
+Clears registered routes.
+
 =head2 match($req)
+
+Returns a L<HTTP::Router::Match> object that matches a given request.
+If no routes match, it returns C<undef>.
 
 =head2 route_for($req)
 
-=head2 show_table
-
-=head1 PROPERTIES
-
-=head2 routeset
+Returns a L<HTTP::Router::Route> object that matches a given request.
+If no routes match, it returns C<undef>.
 
 =head1 AUTHOR
 
@@ -131,8 +206,7 @@ it under the same terms as Perl itself.
 
 =head1 SEE ALSO
 
-L<HTTP::Router::Mapper>, L<HTTP::Router::Resources>,
-L<HTTP::Router::Route>, L<HTTP::Router::Match>,
+L<HTTP::Router::Declare>, L<HTTP::Router::Route>, L<HTTP::Router::Match>,
 
 L<MojoX::Routes>, L<http://merbivore.com/>,
 L<HTTPx::Dispatcher>, L<Path::Router>, L<Path::Dispatcher>

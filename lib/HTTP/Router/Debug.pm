@@ -1,45 +1,71 @@
 package HTTP::Router::Debug;
 
-use strict;
-use warnings;
+use Any::Moose '::Role';
 use Text::SimpleTable;
+use HTTP::Router;
+
+requires 'routes';
 
 sub show_table {
-    my ( $class, @routes ) = @_;
-    my $report = $class->_make_table_report(\@routes);
-    print $report . "\n";
+    my $table = $_[0]->routing_table->draw;
+    print "$table\n";
 }
 
-sub _make_table_report {
-    my ( $class, $routes ) = @_;
-    my $t = Text::SimpleTable->new(
-        [ 35, 'path' ],
-        [ 10, 'method' ],
-        [ 10, 'controller' ],
-        [ 10, 'action' ]
+sub routing_table {
+    my $self = shift;
+
+    my $table = Text::SimpleTable->new(
+        [qw(35 path)      ],
+        [qw(10 method)    ],
+        [qw(10 controller)],
+        [qw(10 action)    ],
     );
-    foreach my $route ( @{$routes} ) {
-        $t->row(
+
+    for my $route ($self->routes) {
+        my $method = $route->conditions->{method};
+        $method = [ $method ] unless ref $method;
+
+        $table->row(
             $route->path,
-            join( ',', @{ $route->conditions->{method} } ),
+            join(',', @$method),
             $route->params->{controller},
             $route->params->{action}
         );
     }
-    my $header = 'Routing Table:' . "\n";
-    my $table = $t->draw;
-    $header . $table . "\n";
+
+    return $table;
 }
 
+# apply self to HTTP::Router
+__PACKAGE__->meta->apply(HTTP::Router->meta);
+
+no Any::Moose '::Role';
 1;
 
 =head1 NAME
 
 HTTP::Router::Debug
 
+=head1 SYNOPSIS
+
+    use HTTP::Router;
+    use HTTP::Router::Debug;
+
+    my $router = HTTP::Router->define(...);
+
+    print $router->routing_table->draw;
+    # or
+    $router->show_table;
+
 =head1 METHODS
 
-=head2 show_table(@routes)
+=head2 routing_table
+
+Returns a Text::SimpleTable object for routing information.
+
+=head2 show_table
+
+Constructs and Prints a table for routing information.
 
 =head1 AUTHOR
 

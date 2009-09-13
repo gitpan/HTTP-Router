@@ -1,47 +1,54 @@
 package HTTP::Router::Match;
 
-use Mouse;
+use Any::Moose;
 
 has 'params' => (
-    is      => 'rw',
+    is      => 'ro',
     isa     => 'HashRef',
-    default => sub { +{} },
     lazy    => 1,
+    default => sub { +{} },
 );
 
 has 'captures' => (
-    is      => 'rw',
+    is      => 'ro',
     isa     => 'HashRef',
-    default => sub { +{} },
     lazy    => 1,
+    default => sub { +{} },
 );
 
 has 'route' => (
-    is       => 'rw',
+    is       => 'ro',
     isa      => 'HTTP::Router::Route',
     handles  => ['uri_for'],
     required => 1,
 );
 
-no Mouse; __PACKAGE__->meta->make_immutable; 1;
-
-=for stopwords params
+no Any::Moose;
+__PACKAGE__->meta->make_immutable;
 
 =head1 NAME
 
-HTTP::Router::Match
+HTTP::Router::Match - Matched Object Representation for HTTP::Router
 
 =head1 METHODS
 
-=head2 uri_for($captures?)
+=head2 uri_for($args?)
+
+Returns a route path which is processed with parameters.
 
 =head1 PROPERTIES
 
 =head2 params
 
+Route parameters which was matched.
+
 =head2 captures
 
+Captured variable parameters which was matched.
+
 =head2 route
+
+L<HTTP::Router::Route> object which was matched.
 
 =head1 AUTHOR
 
