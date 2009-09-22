@@ -23,14 +23,18 @@ no_index:
     - t
     - xt
 recommends:
-  Mouse: 0.21
-  MouseX::AttributeHelpers: 0.03
+  Moose: 0
+  MooseX::AttributeHelpers: 0
 requires:
-  Any::Moose: 0.07
+  Any::Moose: 0.10
   Carp: 0
   Devel::Caller::Perl: 0
   Filter::Util::Call: 0
+  Hash::AsObject: 0
   Lingua::EN::Inflect::Number: 0
+  List::MoreUtils: 0
+  Mouse: 0.21
+  MouseX::AttributeHelpers: 0.03
   Scalar::Util: 1.14
   Storable: 0
   String::CamelCase: 0
@@ -40,4 +44,4 @@ requires:
 resources:
   license: http://dev.perl.org/licenses/
   repository: git://github.com/masaki/http-router.git
-version: 0.02
+version: 0.03
